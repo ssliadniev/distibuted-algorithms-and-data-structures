@@ -2,10 +2,12 @@ import bisect
 import threading
 from typing import Optional, Tuple
 
-from constants import MARKER_INTERNAL, MARKER_LEAF, PAGE_SIZE
+from constants import (INTERNAL_ENTRY_OVERHEAD, INTERNAL_HEADER_SIZE,
+                       LEAF_ENTRY_OVERHEAD, LEAF_HEADER_SIZE, MARKER_INTERNAL,
+                       MARKER_LEAF, POINTER_SIZE)
 from freelist import FreeListManager, TransactionTracker
 from node import HeaderNode, InternalNode, LeafNode
-from pager import PAGE_SIZE, Pager
+from pager import Pager
 
 SplitResult = Tuple[int, Optional[bytes], Optional[int]]
 
@@ -33,10 +35,10 @@ class BTree:
     def _init_empty_tree(self) -> None:
         root_page_id = self.pager.allocate_page()
         empty_root = LeafNode(page_id=root_page_id, keys=[], values=[])
-        self.pager.write_page(root_page_id, empty_root.serialize())
+        self.pager.write_page(root_page_id, empty_root.serialize(self.pager.page_size))
 
         self.header = HeaderNode(root_page_id=root_page_id, freelist_head=0)
-        self.pager.write_page(page_id=0, data=self.header.serialize())
+        self.pager.write_page(0, self.header.serialize(self.pager.page_size))
 
     def _allocate_page(self) -> int:
         """
@@ -54,49 +56,88 @@ class BTree:
 
     def _split_leaf(self, node: LeafNode) -> tuple[int, bytes, int]:
         """
-        Splits an oversized leaf node into two halves.
+        Splits an oversized leaf node around half its encoded size.
 
         Args:
-            node (LeafNode): The leaf node exceeding the page size limit.
+            node (LeafNode): The oversized leaf node requiring a split.
 
         Returns:
-            SplitResult: The left page ID, the median key promoted to the parent, and the right page ID.
+            SplitResult: A tuple containing the new left page ID, the promoted median key and the new right page ID.
         """
 
-        mid = len(node.keys) // 2
-        split_key = node.keys[mid]
+        total_size = LEAF_HEADER_SIZE + sum(
+            LEAF_ENTRY_OVERHEAD + len(k) + len(v) for k, v in zip(node.keys, node.values)
+        )
+        target_half = total_size // 2
 
-        left_node = LeafNode(node.page_id, node.keys[:mid], node.values[:mid])
+        split_idx = 1
+        left_size = LEAF_HEADER_SIZE
 
+        for i in range(len(node.keys)):
+            entry_size = LEAF_ENTRY_OVERHEAD + len(node.keys[i]) + len(node.values[i])
+
+            if left_size + entry_size > self.pager.page_size and i > 0:
+                split_idx = i
+                break
+
+            left_size += entry_size
+
+            if left_size >= target_half and i < len(node.keys) - 1:
+                split_idx = i + 1
+                break
+
+        split_key = node.keys[split_idx]
+
+        left_node = LeafNode(node.page_id, node.keys[:split_idx], node.values[:split_idx])
         right_page_id = self._allocate_page()
-        right_node = LeafNode(right_page_id, node.keys[mid:], node.values[mid:])
+        right_node = LeafNode(right_page_id, node.keys[split_idx:], node.values[split_idx:])
 
-        self.pager.write_page(left_node.page_id, left_node.serialize())
-        self.pager.write_page(right_node.page_id, right_node.serialize())
+        self.pager.write_page(left_node.page_id, left_node.serialize(self.pager.page_size))
+        self.pager.write_page(right_node.page_id, right_node.serialize(self.pager.page_size))
 
         return left_node.page_id, split_key, right_node.page_id
 
     def _split_internal(self, node: InternalNode) -> tuple[int, bytes, int]:
         """
-        Splits an oversized internal node into two halves.
+        Splits an oversized internal node around half its encoded size.
 
         Args:
-            node (InternalNode): The internal node exceeding the page size limit.
+            node (InternalNode): The oversized internal node requiring a split.
 
         Returns:
-            SplitResult: The left page ID, the median key promoted to the parent, and the right page ID.
+            SplitResult: A tuple containing the new left page ID, the promoted median key and the new right page ID.
         """
 
-        mid = len(node.keys) // 2
-        split_key = node.keys[mid]
+        total_size = INTERNAL_HEADER_SIZE + POINTER_SIZE + sum(
+            INTERNAL_ENTRY_OVERHEAD + len(k) + POINTER_SIZE for k in node.keys
+        )
+        target_half = total_size // 2
 
-        left_node = InternalNode(node.page_id, node.keys[:mid], node.child_page_ids[:mid + 1])
+        split_idx = 1
+        left_size = INTERNAL_HEADER_SIZE + POINTER_SIZE
+
+        for i in range(len(node.keys)):
+            entry_size = INTERNAL_ENTRY_OVERHEAD + len(node.keys[i]) + POINTER_SIZE
+
+            if left_size + entry_size > self.pager.page_size and i > 0:
+                split_idx = i
+                break
+
+            left_size += entry_size
+
+            if left_size >= target_half and i < len(node.keys) - 1:
+                split_idx = i + 1
+                break
+
+        split_key = node.keys[split_idx]
+
+        left_node = InternalNode(node.page_id, node.keys[:split_idx], node.child_page_ids[:split_idx + 1])
 
         right_page_id = self._allocate_page()
-        right_node = InternalNode(right_page_id, node.keys[mid + 1:], node.child_page_ids[mid + 1:])
+        right_node = InternalNode(right_page_id, node.keys[split_idx + 1:], node.child_page_ids[split_idx + 1:])
 
-        self.pager.write_page(left_node.page_id, left_node.serialize())
-        self.pager.write_page(right_node.page_id, right_node.serialize())
+        self.pager.write_page(left_node.page_id, left_node.serialize(self.pager.page_size))
+        self.pager.write_page(right_node.page_id, right_node.serialize(self.pager.page_size))
 
         return left_node.page_id, split_key, right_node.page_id
 
@@ -163,9 +204,9 @@ class BTree:
 
         new_page_id = self._allocate_page()
         node.page_id = new_page_id
-        serialized = node.serialize()
+        serialized = node.serialize(self.pager.page_size)
 
-        if len(serialized) > PAGE_SIZE:
+        if len(serialized) > self.pager.page_size:
             return self._split_leaf(node)
 
         self.pager.write_page(new_page_id, serialized)
@@ -191,9 +232,9 @@ class BTree:
 
         new_page_id = self._allocate_page()
         node.page_id = new_page_id
-        serialized = node.serialize()
+        serialized = node.serialize(self.pager.page_size)
 
-        if len(serialized) > PAGE_SIZE:
+        if len(serialized) > self.pager.page_size:
             return self._split_internal(node)
 
         self.pager.write_page(new_page_id, serialized)
@@ -232,6 +273,7 @@ class BTree:
 
             if reclaimable:
                 self.freelist.add_free_pages(reclaimable)
+                self.pager.publish_freelist_head(self.header.freelist_head)
 
             orphaned_pages: list[int] = []
 
@@ -243,11 +285,21 @@ class BTree:
                 new_super_root_id = self._allocate_page()
                 new_root = InternalNode(new_super_root_id, [split_key], [new_root_id, split_right_id])
 
-                self.pager.write_page(new_super_root_id, new_root.serialize())
+                self.pager.write_page(new_super_root_id, new_root.serialize(self.pager.page_size))
                 new_root_id = new_super_root_id
 
+            self.pager.sync()
+
             self.header.root_page_id = new_root_id
-            self.pager.write_page(page_id=0, data=self.header.serialize())
+            self.pager.publish_root(new_root_id)
+
             self.pager.sync()
 
             self.tracker.commit_write(orphaned_pages)
+
+            immediate_reclaim = self.tracker.get_reclaimable_pages()
+            if immediate_reclaim:
+                self.freelist.add_free_pages(immediate_reclaim)
+                self.pager.publish_freelist_head(self.header.freelist_head)
+
+                self.pager.sync()
