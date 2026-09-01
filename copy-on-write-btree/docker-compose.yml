@@ -1,0 +1,8 @@
+services:
+  cow-btree:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app
