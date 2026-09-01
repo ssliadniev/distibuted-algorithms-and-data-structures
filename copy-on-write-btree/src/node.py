@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List
 
 from constants import (MARKER_FREELIST, MARKER_HEADER, MARKER_INTERNAL,
-                       MARKER_LEAF, PAGE_SIZE)
+                       MARKER_LEAF)
 
 
 @dataclass
@@ -15,8 +15,8 @@ class HeaderNode:
     root_page_id: int
     freelist_head: int
 
-    def serialize(self) -> bytearray:
-        buf = bytearray(PAGE_SIZE)
+    def serialize(self, page_size: int) -> bytearray:
+        buf = bytearray(page_size)
         struct.pack_into("<B Q Q", buf, 0, MARKER_HEADER, self.root_page_id, self.freelist_head)
         return buf
 
@@ -36,9 +36,9 @@ class LeafNode:
     keys: List[bytes]
     values: List[bytes]
 
-    def serialize(self) -> bytearray:
+    def serialize(self, page_size: int) -> bytearray:
         req_size = 11 + sum(4 + len(k) + len(v) for k, v in zip(self.keys, self.values))
-        buf = bytearray(max(PAGE_SIZE, req_size))
+        buf = bytearray(max(page_size, req_size))
 
         struct.pack_into("<B Q H", buf, 0, MARKER_LEAF, self.page_id, len(self.keys))
         offset = 11
@@ -91,9 +91,9 @@ class InternalNode:
     keys: List[bytes]
     child_page_ids: List[int]
 
-    def serialize(self) -> bytearray:
+    def serialize(self, page_size: int) -> bytearray:
         req_size = 11 + sum(2 + len(k) for k in self.keys) + (8 * len(self.child_page_ids))
-        buf = bytearray(max(PAGE_SIZE, req_size))
+        buf = bytearray(max(page_size, req_size))
 
         struct.pack_into("<B Q H", buf, 0, MARKER_INTERNAL, self.page_id, len(self.keys))
         offset = 11
@@ -145,8 +145,8 @@ class FreeListNode:
     next_page_id: int
     free_page_ids: List[int]
 
-    def serialize(self) -> bytearray:
-        buf = bytearray(PAGE_SIZE)
+    def serialize(self, page_size: int) -> bytearray:
+        buf = bytearray(page_size)
         struct.pack_into(
             "<B Q Q H", buf, 0, MARKER_FREELIST, self.page_id, self.next_page_id, len(self.free_page_ids)
         )

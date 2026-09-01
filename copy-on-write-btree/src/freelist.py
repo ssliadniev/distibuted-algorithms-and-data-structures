@@ -1,9 +1,9 @@
 import threading
 from typing import Dict, List, Optional
 
-from constants import FREELIST_METADATA_SIZE, PAGE_SIZE
+from constants import FREELIST_METADATA_SIZE
 from node import FreeListNode, HeaderNode
-from pager import PAGE_SIZE, Pager
+from pager import Pager
 
 
 class TransactionTracker:
@@ -75,7 +75,7 @@ class FreeListManager:
     def __init__(self, pager: Pager, header: HeaderNode):
         self.pager = pager
         self.header = header
-        self.max_ids_per_page = (PAGE_SIZE - FREELIST_METADATA_SIZE) // 8
+        self.max_ids_per_page = (self.pager.page_size - FREELIST_METADATA_SIZE) // 8
 
     def add_free_pages(self, page_ids: list[int]) -> None:
         """
@@ -99,7 +99,7 @@ class FreeListManager:
 
         for pid in page_ids:
             if len(node.free_page_ids) >= self.max_ids_per_page:
-                self.pager.write_page(node.page_id, node.serialize())
+                self.pager.write_page(node.page_id, node.serialize(self.pager.page_size))
 
                 new_head_id = self.pager.allocate_page()
                 node = FreeListNode(new_head_id, node.page_id, [pid])
@@ -108,7 +108,7 @@ class FreeListManager:
             else:
                 node.free_page_ids.append(pid)
 
-        self.pager.write_page(node.page_id, node.serialize())
+        self.pager.write_page(node.page_id, node.serialize(self.pager.page_size))
 
     def allocate(self) -> Optional[int]:
         """
@@ -118,19 +118,23 @@ class FreeListManager:
             Optional[int]: A reclaimed page ID, or None if the free-list is empty.
         """
 
-        head_id = self.header.freelist_head
-        if head_id == 0:
+        if self.header.freelist_head == 0:
             return None
 
-        node = FreeListNode.deserialize(self.pager.read_page(head_id))
+        page_data = self.pager.read_page(self.header.freelist_head)
+        node = FreeListNode.deserialize(page_data)
 
         if node.free_page_ids:
-            reused_page_id = node.free_page_ids.pop()
-            self.pager.write_page(node.page_id, node.serialize())
+            allocated_id = node.free_page_ids.pop()
+            self.pager.write_page(node.page_id, node.serialize(self.pager.page_size))
 
-            return reused_page_id
+            return allocated_id
 
+        old_head_id = node.page_id
         self.header.freelist_head = node.next_page_id
-        self.pager.write_page(page_id=0, data=self.header.serialize())
 
-        return node.page_id
+        self.pager.publish_freelist_head(node.next_page_id)
+
+        self.pager.sync()
+
+        return old_head_id

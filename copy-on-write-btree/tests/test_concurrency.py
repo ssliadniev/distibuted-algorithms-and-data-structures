@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from src.btree import BTree
-from src.constants import PAGE_SIZE
+from src.constants import DEFAULT_PAGE_SIZE
 from src.pager import MmapPager
 
 
@@ -26,7 +26,7 @@ def test_concurrent_readers_and_writer(temp_mmap_file: str) -> None:
     Many concurrent readers during ongoing writes (no lost or torn reads).
     """
 
-    pager = MmapPager(temp_mmap_file, page_size=PAGE_SIZE)
+    pager = MmapPager(temp_mmap_file, page_size=DEFAULT_PAGE_SIZE)
     tree = BTree(pager)
 
     key = b"shared_key"
@@ -68,7 +68,7 @@ def test_space_reuse_bounded_file_size(temp_mmap_file: str) -> None:
     Repeatedly overwrites keys and asserts the file size stays bounded (proving space reuse).
     """
 
-    pager = MmapPager(temp_mmap_file, page_size=PAGE_SIZE)
+    pager = MmapPager(temp_mmap_file, page_size=DEFAULT_PAGE_SIZE)
     tree = BTree(pager)
 
     key = b"volatile_key"
