@@ -1,0 +1,86 @@
+name: raft-python
+
+x-raft-environment: &raft-environment
+  RAFT_BIND_HOST: "0.0.0.0"
+  RAFT_BIND_PORT: "8000"
+  RAFT_CLUSTER_MEMBERS: '{"node1":"http://172.30.0.11:8000","node2":"http://172.30.0.12:8000","node3":"http://172.30.0.13:8000"}'
+  RAFT_LOG_LEVEL: "${RAFT_LOG_LEVEL:-INFO}"
+  RAFT_HEARTBEAT_INTERVAL_MS: "${RAFT_HEARTBEAT_INTERVAL_MS:-100}"
+  RAFT_ELECTION_TIMEOUT_MIN_MS: "${RAFT_ELECTION_TIMEOUT_MIN_MS:-450}"
+  RAFT_ELECTION_TIMEOUT_MAX_MS: "${RAFT_ELECTION_TIMEOUT_MAX_MS:-900}"
+  RAFT_HTTP_REQUEST_TIMEOUT_MS: "${RAFT_HTTP_REQUEST_TIMEOUT_MS:-250}"
+  RAFT_CLIENT_COMMIT_TIMEOUT_MS: "${RAFT_CLIENT_COMMIT_TIMEOUT_MS:-3000}"
+
+x-raft-service: &raft-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: raft-node:local
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - >-
+        import urllib.request;
+        urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=1)
+    interval: 2s
+    timeout: 1s
+    retries: 15
+    start_period: 2s
+
+services:
+  node1:
+    <<: *raft-service
+    environment:
+      <<: *raft-environment
+      RAFT_NODE_ID: node1
+    ports:
+      - "${RAFT_NODE1_HOST_PORT:-8001}:8000"
+    networks:
+      raft_cluster:
+        ipv4_address: 172.30.0.11
+      raft_client: {}
+
+  node2:
+    <<: *raft-service
+    environment:
+      <<: *raft-environment
+      RAFT_NODE_ID: node2
+    ports:
+      - "${RAFT_NODE2_HOST_PORT:-8002}:8000"
+    networks:
+      raft_cluster:
+        ipv4_address: 172.30.0.12
+      raft_client: {}
+
+  node3:
+    <<: *raft-service
+    profiles: ["full"]
+    environment:
+      <<: *raft-environment
+      RAFT_NODE_ID: node3
+    ports:
+      - "${RAFT_NODE3_HOST_PORT:-8003}:8000"
+    networks:
+      raft_cluster:
+        ipv4_address: 172.30.0.13
+      raft_client: {}
+
+networks:
+  raft_cluster:
+    name: raft-cluster
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  raft_client:
+    name: raft-client
+    driver: bridge
