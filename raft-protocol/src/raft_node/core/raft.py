@@ -41,7 +41,9 @@ class RaftCore:
             voted_for=state.voted_for,
             leader_id=state.leader_id,
             commit_length=state.commit_length,
-            log=tuple(state.log)
+            log=tuple(state.log),
+            applied_length=state.applied_length,
+            applied_commands=tuple(state.applied_commands)
         )
 
     def start_election(self) -> tuple[VoteRequest, ...]:
@@ -232,14 +234,14 @@ class RaftCore:
 
         self._reconcile_log(request.prefix_length, request.entries)
 
+        acknowledged_length = request.prefix_length + len(request.entries)
         previous_commit_length = state.commit_length
         state.commit_length = max(
             state.commit_length,
-            min(request.leader_commit, len(state.log))
+            min(request.leader_commit, acknowledged_length)
         )
 
         committed_entries = tuple(state.log[previous_commit_length : state.commit_length])
-        acknowledged_length = request.prefix_length + len(request.entries)
 
         state.validate()
 
@@ -288,10 +290,7 @@ class RaftCore:
 
             state.validate()
 
-            return LogResponseResult(
-                retry_peer=retry_peer,
-                committed_entries=committed_entries
-            )
+            return LogResponseResult(retry_peer=retry_peer, committed_entries=committed_entries)
 
         if state.sent_length[follower_id] == 0:
             return LogResponseResult()

@@ -29,5 +29,4 @@ if [ "$connected" != "yes" ]; then
 fi
 
 docker network disconnect raft-cluster "$container_id"
-echo "$node is isolated from Raft peer traffic; its published HTTP port remains available"
-
+echo "$node is disconnected from raft-cluster"

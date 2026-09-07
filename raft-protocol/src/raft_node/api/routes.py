@@ -1,7 +1,6 @@
-from typing import cast
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-
 from raft_node.api.schemas import (CommandRequestBody, CommandResponseBody,
                                    HealthBody, LogRequestBody, LogResponseBody,
                                    NodeStatusBody, StatusLogEntry,
@@ -27,7 +26,7 @@ def get_raft_node(request: Request) -> RaftNode:
 
 
 @api_router.get("/health", response_model=HealthBody)
-async def health(node: RaftNode = Depends(get_raft_node)) -> HealthBody:
+async def health(node: Annotated[RaftNode, Depends(get_raft_node)]) -> HealthBody:
     """
     Check the liveliness of the HTTP server.
     """
@@ -36,7 +35,7 @@ async def health(node: RaftNode = Depends(get_raft_node)) -> HealthBody:
 
 
 @api_router.get("/", response_model=NodeStatusBody)
-async def get_status(node: RaftNode = Depends(get_raft_node)) -> NodeStatusBody:
+async def get_status(node: Annotated[RaftNode, Depends(get_raft_node)]) -> NodeStatusBody:
     """
     Retrieve the current in-memory Raft log and consensus state.
     """
@@ -51,6 +50,8 @@ async def get_status(node: RaftNode = Depends(get_raft_node)) -> NodeStatusBody:
         voted_for=snapshot.voted_for,
         leader_id=snapshot.leader_id,
         commit_length=snapshot.commit_length,
+        applied_length=snapshot.applied_length,
+        applied_commands=list(snapshot.applied_commands),
         log=[
             StatusLogEntry(
                 index=index,
@@ -59,12 +60,12 @@ async def get_status(node: RaftNode = Depends(get_raft_node)) -> NodeStatusBody:
                 committed=index < snapshot.commit_length,
             )
             for index, entry in enumerate(snapshot.log)
-        ],
+        ]
     )
 
 
 @api_router.post("/", response_model=CommandResponseBody, status_code=status.HTTP_201_CREATED)
-async def submit_command(body: CommandRequestBody, node: RaftNode = Depends(get_raft_node)) -> CommandResponseBody:
+async def submit_command(body: CommandRequestBody, node: Annotated[RaftNode, Depends(get_raft_node)]) -> CommandResponseBody:
     """
     Submit a client command to the Raft cluster.
 
@@ -79,17 +80,17 @@ async def submit_command(body: CommandRequestBody, node: RaftNode = Depends(get_
     except NotLeaderError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "not_a_leader", "leader_id": error.leader_id},
+            detail={"error": "not_a_leader", "leader_id": error.leader_id}
         ) from error
     except CommitTimeoutError as error:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail={"error": "commit_timeout", "index": error.index, "term": error.term},
+            detail={"error": "commit_timeout", "index": error.index, "term": error.term}
         ) from error
     except NodeStoppedError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "node_stopped"},
+            detail={"error": "node_stopped"}
         ) from error
 
     return CommandResponseBody(
@@ -97,11 +98,12 @@ async def submit_command(body: CommandRequestBody, node: RaftNode = Depends(get_
         term=result.entry.term,
         command=result.entry.command,
         committed=True,
+        applied=True
     )
 
 
 @api_router.post("/raft/vote", response_model=VoteResponseBody)
-async def request_vote(body: VoteRequestBody, node: RaftNode = Depends(get_raft_node)) -> VoteResponseBody:
+async def request_vote(body: VoteRequestBody, node: Annotated[RaftNode, Depends(get_raft_node)]) -> VoteResponseBody:
     """
     Handle an incoming RequestVote RPC from a candidate.
     """
@@ -111,7 +113,7 @@ async def request_vote(body: VoteRequestBody, node: RaftNode = Depends(get_raft_
 
 
 @api_router.post("/raft/log", response_model=LogResponseBody)
-async def append_entries(body: LogRequestBody,node: RaftNode = Depends(get_raft_node)) -> LogResponseBody:
+async def append_entries(body: LogRequestBody, node: Annotated[RaftNode, Depends(get_raft_node)]) -> LogResponseBody:
     """
     Handle an incoming AppendEntries RPC from the leader.
     """

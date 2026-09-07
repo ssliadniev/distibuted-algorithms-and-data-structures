@@ -31,5 +31,5 @@ if [ "$connected" = "yes" ]; then
 fi
 
 docker network connect --ip "$node_ip" raft-cluster "$container_id"
-echo "$node is reconnected to Raft peer traffic"
+echo "$node is reconnected to raft-cluster at $node_ip"
 

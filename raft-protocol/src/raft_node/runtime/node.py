@@ -4,9 +4,18 @@ import random
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from raft_node.core import (AppendCommandResult, LogEntry, LogRequest,
-                            LogResponse, NodeSnapshot, NotLeaderError,
-                            RaftCore, Role, VoteRequest, VoteResponse)
+from raft_node.core import (
+    AppendCommandResult,
+    LogEntry,
+    LogRequest,
+    LogResponse,
+    NodeSnapshot,
+    NotLeaderError,
+    RaftCore,
+    Role,
+    VoteRequest,
+    VoteResponse,
+)
 from raft_node.runtime.errors import CommitTimeoutError, NodeStoppedError
 from raft_node.transport import PeerTransport
 
@@ -68,14 +77,17 @@ class RaftNode:
         if self._running:
             return
 
-        self._running = True
+        async with self._condition:
+            self._apply_committed_entries()
+            self._running = True
+
         self._background_tasks = {
             asyncio.create_task(self._election_loop(), name="raft-election"),
             asyncio.create_task(self._heartbeat_loop(), name="raft-heartbeat"),
             *(
                 asyncio.create_task(
                     self._replication_worker(peer_id),
-                    name=f"raft-replication-{peer_id}",
+                    name=f"raft-replication-{peer_id}"
                 )
                 for peer_id in self._replication_events
             )
@@ -107,7 +119,7 @@ class RaftNode:
 
     async def snapshot(self) -> NodeSnapshot:
         """
-        Retrieve a thread-safe snapshot of the current Raft state.
+        Retrieve a consistent snapshot while holding the asyncio condition.
         """
 
         async with self._condition:
@@ -115,7 +127,7 @@ class RaftNode:
 
     async def submit_command(self, command: str) -> AppendCommandResult:
         """
-        Append a command and wait until it is committed or leadership is lost.
+        Append a command and wait until it is committed and applied, or leadership is lost.
 
         Raises:
             NodeStoppedError: If the node is shutting down.
@@ -128,6 +140,7 @@ class RaftNode:
 
         async with self._condition:
             result = self.core.append_command(command)
+            self._apply_committed_entries()
 
             target_index = result.index
             target_entry = result.entry
@@ -135,7 +148,7 @@ class RaftNode:
             self._signal_replication()
             self._condition.notify_all()
 
-            if self.core.state.commit_length > target_index:
+            if self.core.state.applied_length > target_index:
                 return result
 
         try:
@@ -150,7 +163,7 @@ class RaftNode:
 
     async def receive_vote_request(self, request: VoteRequest) -> VoteResponse:
         """
-        Handle an inbound RequestVote RPC safely across thread boundaries.
+        Serialize an inbound RequestVote RPC with other state transitions.
         """
 
         async with self._condition:
@@ -164,11 +177,12 @@ class RaftNode:
 
     async def receive_log_request(self, request: LogRequest) -> LogResponse:
         """
-        Handle an inbound AppendEntries RPC safely across thread boundaries.
+        Serialize an inbound AppendEntries RPC with other state transitions.
         """
 
         async with self._condition:
             result = self.core.handle_log_request(request)
+            self._apply_committed_entries()
 
             if result.reset_election_timer:
                 self._reset_election_timeout()
@@ -178,14 +192,14 @@ class RaftNode:
 
     async def _wait_for_commit(self, index: int, entry: LogEntry) -> None:
         """
-        Block until a specific log index is committed or the node is demoted.
+        Wait for this exact entry to be applied, or for leadership to be lost.
         """
 
         async with self._condition:
             while True:
                 state = self.core.state
 
-                if state.commit_length > index:
+                if state.applied_length > index:
                     if index < len(state.log) and state.log[index] == entry:
                         return
 
@@ -255,7 +269,7 @@ class RaftNode:
             result = self.core.handle_vote_response(response)
 
             if result.became_leader:
-                LOGGER.info(msg=f"node {self.core.state.node_id} became leader for term {self.core.state.current_term}")
+                LOGGER.info(f"node {self.core.state.node_id} became leader for term {self.core.state.current_term}")
                 self._signal_replication()
 
             if result.stepped_down:
@@ -299,6 +313,7 @@ class RaftNode:
 
                 async with self._condition:
                     result = self.core.handle_log_response(response)
+                    self._apply_committed_entries()
 
                     if result.stepped_down:
                         self._reset_election_timeout()
@@ -308,6 +323,19 @@ class RaftNode:
 
                 if not retry:
                     break
+
+    def _apply_committed_entries(self) -> None:
+        """
+        Apply each committed command once, in order, while holding the condition.
+        """
+
+        state = self.core.state
+
+        while state.applied_length < state.commit_length:
+            entry = state.log[state.applied_length]
+
+            state.applied_commands.append(entry.command)
+            state.applied_length += 1
 
     def _signal_replication(self) -> None:
         """

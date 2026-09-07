@@ -14,7 +14,6 @@ from raft_node.transport import HttpPeerTransport, PeerTransport
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
-
     settings: Settings = app.state.settings
     transport: PeerTransport | None = app.state._injected_transport
     random_source: Callable[[float, float], float] | None = app.state._injected_random_source

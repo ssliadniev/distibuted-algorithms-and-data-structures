@@ -73,7 +73,12 @@ class LogRequest:
     entries: tuple[LogEntry, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.term < 0 or self.prefix_length < 0 or self.prefix_term < 0 or self.leader_commit < 0:
+        if (
+            self.term < 0
+            or self.prefix_length < 0
+            or self.prefix_term < 0
+            or self.leader_commit < 0
+        ):
             raise ValueError("log request counters cannot be negative")
 
 
@@ -160,3 +165,5 @@ class NodeSnapshot:
     leader_id: NodeId | None
     commit_length: int
     log: tuple[LogEntry, ...]
+    applied_length: int = 0
+    applied_commands: tuple[str, ...] = ()

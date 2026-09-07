@@ -7,18 +7,42 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="RAFT_", env_file=".env", case_sensitive=False, extra="ignore", frozen=True)
+    model_config = SettingsConfigDict(
+        env_prefix="RAFT_", env_file=".env", case_sensitive=False, extra="ignore", frozen=True
+    )
 
     node_id: str = Field(description="The unique identifier for this Raft node.")
-    bind_host: str = Field(default="0.0.0.0", description="The hostname or IP address to bind the HTTP server to.")
-    bind_port: int = Field(default=8000, ge=1, le=65535, description="The port to bind the HTTP server to.")
-    cluster_members: dict[str, str] = Field(description="Mapping of all cluster node IDs to their HTTP peer URLs.")
+    bind_host: str = Field(
+        default="0.0.0.0", description="The hostname or IP address to bind the HTTP server to."
+    )
+    bind_port: int = Field(
+        default=8000, ge=1, le=65535, description="The port to bind the HTTP server to."
+    )
+    cluster_members: dict[str, str] = Field(
+        description="Mapping of all cluster node IDs to their HTTP peer URLs."
+    )
     log_level: str = Field(default="INFO", description="Application logging level.")
-    heartbeat_interval_ms: int = Field(default=100, gt=0, description="Interval between leader heartbeats in milliseconds.")
-    election_timeout_min_ms: int = Field(default=450, gt=0, description="Minimum bound for the randomized election timeout in milliseconds.")
-    election_timeout_max_ms: int = Field(default=900, gt=0, description="Maximum bound for the randomized election timeout in milliseconds.")
-    http_request_timeout_ms: int = Field(default=250, gt=0, description="Timeout for peer-to-peer HTTP RPCs in milliseconds.")
-    client_commit_timeout_ms: int = Field(default=3000, gt=0, description="Maximum time to wait for a client command to commit in milliseconds.")
+    heartbeat_interval_ms: int = Field(
+        default=100, gt=0, description="Interval between leader heartbeats in milliseconds."
+    )
+    election_timeout_min_ms: int = Field(
+        default=450,
+        gt=0,
+        description="Minimum bound for the randomized election timeout in milliseconds."
+    )
+    election_timeout_max_ms: int = Field(
+        default=900,
+        gt=0,
+        description="Maximum bound for the randomized election timeout in milliseconds."
+    )
+    http_request_timeout_ms: int = Field(
+        default=250, gt=0, description="Timeout for peer-to-peer HTTP RPCs in milliseconds."
+    )
+    client_commit_timeout_ms: int = Field(
+        default=3000,
+        gt=0,
+        description="Maximum time to wait for a client command to commit in milliseconds."
+    )
 
     @model_validator(mode="after")
     def validate_cluster_and_timing(self) -> Self:
