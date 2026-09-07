@@ -1,112 +1,169 @@
-# Raft protocol
+# Raft protocol assignment
 
-In-memory implementation of the Raft consensus algorithm of the supplied distributed-systems notes. 
-The project targets Python 3.12 and runs one Raft node per Docker container.
+Python 3.12+ implementation of Raft with a static cluster and in-memory state.
+The protocol follows sections 1–5 of the [Raft paper](https://raft.github.io/raft.pdf),
+including the Figure 2 rules, and section 6.2 of the
+[Cambridge distributed systems notes](https://www.cl.cam.ac.uk/teaching/2021/ConcDisSys/dist-sys-notes.pdf).
 
-Implemented behavior includes randomized leader elections, higher-term step-down, log-freshness vote checks, periodic heartbeats, per-follower log backtracking, conflict replacement, quorum commitment, and the current-term commit restriction. 
-Cluster membership and all Raft state are intentionally kept static and in memory, as required by the assignment.
+Implemented behavior: randomized elections, one vote per term, higher-term step-down,
+log-freshness voting, heartbeats, prefix consistency checks, follower backtracking,
+conflicting-suffix replacement, fixed-majority commitment, the current-term commitment
+restriction, and ordered application of committed messages.
 
----
+## Run the assignment scenario
 
-## Key Architectural & Performance Optimizations
+Requirements: Python 3.12+, Docker Engine with Linux containers, Docker Compose **2.33.1+** and a POSIX shell. 
 
-*   **Algorithmic Efficiency:** Log validation operates in $O(1)$ time by checking term monotonicity at the boundary rather than iterating the entire log.
-*   **Memory Safety:** Uses lazy evaluation (`itertools.islice`) and generators during state transitions to prevent $O(N)$ memory duplication when evaluating rapidly growing logs.
-*   **Immutability:** Domain messages, configuration, and API payloads are strictly immutable (`frozen=True` dataclasses and Pydantic models) to guarantee thread safety during asynchronous cross-task RPCs.
-*   **Dependency Injection:** The FastAPI layer utilizes strict dependency injection (`Depends`) to pass the Raft runtime state, decoupling HTTP routing from the core protocol logic for isolated testing.
+From this directory:
 
----
-
-## Project layout
-
-```text
-src/raft_node/
-  api/          HTTP routes, dependency injection, and Pydantic schemas
-  config/       Environment settings and static membership
-  core/         Pure Raft state and transition logic
-  runtime/      Timers, elections, replication, and lifecycle
-  transport/    Async peer HTTP client
-tests/
-  unit/         Deterministic protocol-state tests
-  integration/  HTTP and multi-node in-process tests
-scripts/        Local partition and recovery helpers
+```bash
+make self-test
 ```
 
----
+The host-side acceptance script uses only Python's standard library. It builds the
+application and installs its dependencies inside Docker. It resets this Compose project's
+containers before starting and stops them afterward; their in-memory state is discarded.
 
-## Local topology
+All three members are configured before any process starts. Quorum is always **2 of 3**.
+Starting node3 later makes an existing member available; it does not change membership.
 
-All three members are configured from the start. The first command starts two available members; the third member is started later without changing cluster membership.
+| Step | Required observation before continuing                                                                                                               |
+|------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1    | Only node1 and node2 run; one becomes leader.                                                                                                        |
+| 2    | Both have committed and applied msg1, msg2 before node3 starts.                                                                                      |
+| 3    | Node3 catches up to that committed and applied prefix.                                                                                               |
+| 4    | The current leader is isolated in both peer directions, its client API remains reachable, and the other two nodes elect a higher-term leader.        |
+| 5    | Both majority nodes commit and apply msg3, msg4 before healing.                                                                                      |
+| 6    | POST msg5 reaches the old node and returns either a verified timeout with a local uncommitted entry, or a consistent NotALeader response.            |
+| 7    | All nodes converge to identical entry terms and commands for msg1–msg4, commit and apply all four, and settle on one leader in a common higher term. |
 
-| Service | Host URL                | Raft-network address | Default startup |
-|---------|-------------------------|----------------------|-----------------|
-| `node1` | `http://localhost:8001` | `172.30.0.11:8000`   | Yes             |
-| `node2` | `http://localhost:8002` | `172.30.0.12:8000`   | Yes             |
-| `node3` | `http://localhost:8003` | `172.30.0.13:8000`   | No              |
+For this implementation, an isolated leader normally keeps its old role until it learns
+of a higher term. Therefore msg5 normally times out and leaves a conflicting entry, which
+step 7 actually verifies is replaced. If msg5 is rejected before append, the script reports
+that branch explicitly and does not claim it observed replacement of a nonexistent entry.
+The offline runtime regression always exercises the conflicting-entry replacement branch.
 
----
+Transport errors, missing responses, HTTP 5xx errors other than the expected commit timeout,
+uncommitted majority entries, and unequal entry terms all fail the test. The script reads
+published ports and timing values from resolved Compose configuration, including overrides.
+On failure it saves container logs, process status, node snapshots, and command stderr in
+`artifacts/self-test/<timestamp>/` **before** healing or stopping containers.
+
+## Topology and manual operation
+
+| Service | Default client URL    | Peer address     | Initial startup |
+|---------|-----------------------|------------------|-----------------|
+| node1   | http://localhost:8001 | 172.30.0.11:8000 | Yes             |
+| node2   | http://localhost:8002 | 172.30.0.12:8000 | Yes             |
+| node3   | http://localhost:8003 | 172.30.0.13:8000 | No              |
+
+Nodes have two networks. Peer RPC URLs use fixed addresses on the internal `raft-cluster`
+bridge. The `raft-client` bridge has the highest gateway priority and provides host access.
+The partition helper disconnects only `raft-cluster`; the heal helper restores the node's
+original static peer IP. The acceptance test probes actual cross-partition TCP paths and
+checks the old node's published HTTP endpoint to validate this setup on the current host.
+
+```bash
+make cluster-up
+make node3-up
+curl http://localhost:8001/
+
+sh scripts/partition-node.sh node1
+sh scripts/heal-node.sh node1
+make cluster-down
+```
+
+The example node1 argument is illustrative; leadership is randomized. Do not assume node1
+is leader. The automated acceptance script chooses the current leader itself.
 
 ## HTTP API
 
-Every node exposes its public API on `/`:
-
 ```bash
 curl http://localhost:8001/
-
 curl --request POST http://localhost:8001/ \
   --header 'Content-Type: application/json' \
   --data '{"command":"msg1"}'
 ```
 
-`GET /` returns the local role, term, known leader, static membership, commit boundary, and complete
-local log. Each log item includes a `committed` flag.
+`GET /` reports identity, membership, role, term, vote, known leader, the full local log,
+`commit_length`, `applied_length`, and `applied_commands`. Each log entry contains its
+zero-based index, term, command, and committed flag. Counts are prefix lengths:
+`commit_length = 2` means indices 0 and 1 are committed.
 
-`POST /` returns HTTP `201` only after the command is committed. A follower returns `409` with its
-leader hint. An isolated leader that cannot form a quorum returns `504`; its entry may remain locally
-uncommitted until a higher-term leader repairs the log.
+The application state machine is a message list. Applying a command appends its string
+to `applied_commands`. The runtime applies only committed entries, in log order, once per
+log index during a process lifetime. A repeated client POST is a new log entry, even when
+its string is identical; client request deduplication is not implemented.
 
-Nodes use two internal endpoints:
+| Request result | Meaning                                                                                                                      |
+|----------------|------------------------------------------------------------------------------------------------------------------------------|
+| POST / → 201   | The exact entry is committed and applied locally; response includes index, term, command, committed=true, applied=true.      |
+| POST / → 409   | NotALeader; body includes `detail.error = "not_a_leader"` and a possibly absent leader hint.                                 |
+| POST / → 504   | Commit deadline expired; body includes `detail.error = "commit_timeout"`, index, and term. The entry can remain uncommitted. |
+| POST / → 503   | The runtime has stopped.                                                                                                     |
+| POST / → 422   | Invalid request body, such as an empty command.                                                                              |
 
-- `POST /raft/vote` for `VoteRequest` and `VoteResponse` messages.
-- `POST /raft/log` for `LogRequest` and `LogResponse` messages.
+A timeout is an uncertain client outcome: outside this controlled partition scenario,
+the entry might commit later. It is not an automatic rollback or a deduplication token.
 
----
+Internal endpoints are `POST /raft/vote` and `POST /raft/log`; `/health` checks HTTP liveness.
+`GET /` is a diagnostic local snapshot, not a linearizable read protocol.
 
-## Development commands
+## Development and verification
 
 ```bash
+make test-offline
+
+python3 -m venv .venv
+. .venv/bin/activate
 make install
+make format
 make check
-make compose-config
-```
-
-The Docker lifecycle commands are:
-
-```bash
-make cluster-up
-make node3-up
-./scripts/partition-node.sh node1
-./scripts/heal-node.sh node1
-make cluster-down
-```
-
-The partition command disconnects only peer traffic. The selected node remains reachable through its published host port, allowing the stale-leader behavior to be tested.
-
-Run the complete seven-step assignment scenario with:
-```bash
 make self-test
 ```
 
-The self-test starts two nodes, posts `msg1` and `msg2`, starts Node 3, partitions the original leader,
-commits `msg3` and `msg4` through the new leader, attempts `msg5` on the old leader, heals the
-partition, and verifies that all three logs converge without `msg5`.
+`make test-offline` runs the standard-library suite against the actual core/runtime plus
+regressions for the acceptance script. Runtime RPC delivery is simulated in memory, with
+delays and bidirectional partitions. Its seven-step test uses the default assignment timings:
+100 ms heartbeats, 450–900 ms elections, and a 3000 ms client commitment deadline.
 
----
+`make check` runs Ruff, mypy, pytest with coverage, and Docker Compose configuration validation.
+The original 90% coverage threshold is retained. HTTP integration tests exercise FastAPI
+routes through ASGI and the peer client through httpx MockTransport. The Docker acceptance
+test is the separate check for actual containers, published ports, and network disconnection.
 
-## Design constraints
+Verification performed for this delivery: **36 offline tests passed**. Python compilation,
+shell syntax, and local YAML/TOML parsing also passed, as recorded in CHANGES.md. Docker,
+the HTTP dependencies, pytest, Ruff, mypy, and coverage were unavailable in the review
+environment. Consequently the HTTP suite, coverage threshold, `make check`, and Docker
+acceptance have **not** been certified as passing here. Run the commands above locally.
 
-- Membership is immutable and contains all three nodes before any process starts.
-- A majority is calculated from configured members, never currently reachable members.
-- State is not persisted. Restarting a process loses its term, vote, log, and commit boundary.
-- The public GET endpoint is diagnostic local state, not a linearizable state-machine read.
-- Client-command deduplication and exactly-once semantics are outside the requested scope.
+## Implementation notes and scope
+
+- `core/` contains protocol state transitions; `runtime/` owns timers, serialized mutation,
+  replication workers, and application; `api/` and `transport/` handle HTTP.
+- Core/runtime mutation is serialized by an `asyncio.Condition` within one event loop.
+  This is not a claim of safety under arbitrary OS-thread access.
+- Domain messages and snapshots use frozen dataclasses and tuple collections. Pydantic
+  `frozen=True` prevents field reassignment but does not deeply freeze nested lists/dicts.
+- State validation scans the log: it is O(log length), not O(1). Building RPC suffixes and
+  snapshots copies collections. There is no `itertools.islice` optimization in this version.
+- Membership stays fixed. A reachable minority cannot elect a leader or commit new entries.
+- No term, vote, log, commit boundary, or application state is persisted. Restarting an
+  existing member discards its state; safe recovery after that loss is outside this assignment
+  variant. The scenario keeps processes alive during partition and healing.
+- Membership changes, snapshots/log compaction, durable crash recovery, linearizable reads,
+  and client deduplication are outside the requested scope.
+
+## Source layout
+
+| Directory               | Contents                                                  |
+|-------------------------|-----------------------------------------------------------|
+| src/raft_node/core      | Protocol models, invariants, and transitions              |
+| src/raft_node/runtime   | Async lifecycle, elections, replication, and application  |
+| src/raft_node/api       | FastAPI routes and wire schemas                           |
+| src/raft_node/transport | Transport protocol and HTTP implementation                |
+| src/raft_node/config    | Environment settings and validation                       |
+| scripts                 | Docker acceptance scenario, partition helper, heal helper |
+| tests/offline           | Core/runtime, application, and acceptance regressions     |
+| tests/integration       | HTTP API, peer transport, and settings tests              |

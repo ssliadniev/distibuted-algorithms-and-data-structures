@@ -47,7 +47,8 @@ services:
     networks:
       raft_cluster:
         ipv4_address: 172.30.0.11
-      raft_client: {}
+      raft_client:
+        gw_priority: 1
 
   node2:
     <<: *raft-service
@@ -59,7 +60,8 @@ services:
     networks:
       raft_cluster:
         ipv4_address: 172.30.0.12
-      raft_client: {}
+      raft_client:
+        gw_priority: 1
 
   node3:
     <<: *raft-service
@@ -72,12 +74,14 @@ services:
     networks:
       raft_cluster:
         ipv4_address: 172.30.0.13
-      raft_client: {}
+      raft_client:
+        gw_priority: 1
 
 networks:
   raft_cluster:
     name: raft-cluster
     driver: bridge
+    internal: true
     ipam:
       config:
         - subnet: 172.30.0.0/24

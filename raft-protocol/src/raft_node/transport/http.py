@@ -93,7 +93,7 @@ class HttpPeerTransport:
     ) -> dict[str, Any] | None:
         peer_url = self._peer_urls.get(peer_id)
         if peer_url is None:
-            LOGGER.warning(msg=f"Refusing to send RPC to unknown peer %{peer_id}")
+            LOGGER.warning(msg=f"Refusing to send RPC to unknown peer {peer_id}")
             return None
 
         try:
@@ -106,7 +106,7 @@ class HttpPeerTransport:
 
             return data
         except (httpx.HTTPError, TypeError, ValueError) as error:
-            LOGGER.debug(msg=f"RPC to {peer_id}{path} failed: %{error}")
+            LOGGER.debug(msg=f"RPC to {peer_id}{path} failed: {error}")
             return None
 
 

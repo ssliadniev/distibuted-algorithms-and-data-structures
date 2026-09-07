@@ -2,8 +2,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from raft_node.core import (LogEntry, LogRequest, LogResponse, VoteRequest,
-                            VoteResponse)
+from raft_node.core import LogEntry, LogRequest, LogResponse, VoteRequest, VoteResponse
 
 
 class CommandRequestBody(BaseModel):
@@ -26,7 +25,8 @@ class CommandResponseBody(BaseModel):
     index: int = Field(description="The log index where the command was appended.")
     term: int = Field(description="The leader's term when the command was appended.")
     command: str = Field(description="The executed command string.")
-    committed: bool = Field(description="Indicates whether the command reached a quorum.")
+    committed: bool = Field(description="Whether the command is committed.")
+    applied: bool = Field(description="Whether the message was applied to the local state machine.")
 
 
 class StatusLogEntry(BaseModel):
@@ -57,6 +57,8 @@ class NodeStatusBody(BaseModel):
     leader_id: str | None
     commit_length: int
     log: list[StatusLogEntry]
+    applied_length: int
+    applied_commands: list[str]
 
 
 class HealthBody(BaseModel):
@@ -101,7 +103,7 @@ class VoteRequestBody(BaseModel):
             candidate_id=self.candidate_id,
             term=self.term,
             log_length=self.log_length,
-            last_log_term=self.last_log_term,
+            last_log_term=self.last_log_term
         )
 
 
@@ -121,19 +123,21 @@ class VoteResponseBody(BaseModel):
         return cls(
             voter_id=response.voter_id,
             term=response.term,
-            granted=response.granted,
+            granted=response.granted
         )
 
 
 class LogRequestBody(BaseModel):
-    """Payload for an AppendEntries (Log) RPC."""
+    """
+    Payload for an AppendEntries (Log) RPC.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     leader_id: str = Field(description="The node ID of the current leader.")
     term: int = Field(ge=0, description="The leader's current term.")
-    prefix_length: int = Field(ge=0, description="The log index preceding the new entries.")
-    prefix_term: int = Field(ge=0, description="The term of the entry at prefix_length.")
+    prefix_length: int = Field(ge=0, description="Number of entries in the prefix preceding the new entries.")
+    prefix_term: int = Field(ge=0, description="Term at prefix_length - 1, or zero for an empty prefix.")
     leader_commit: int = Field(ge=0, description="The leader's current commit length.")
     entries: list[LogEntryBody] = Field(default_factory=list, description="New entries to append.")
 
@@ -144,7 +148,7 @@ class LogRequestBody(BaseModel):
             prefix_length=self.prefix_length,
             prefix_term=self.prefix_term,
             leader_commit=self.leader_commit,
-            entries=tuple(entry.to_domain() for entry in self.entries),
+            entries=tuple(entry.to_domain() for entry in self.entries)
         )
 
 

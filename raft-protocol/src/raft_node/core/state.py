@@ -17,6 +17,8 @@ class RaftState:
     votes_received: set[NodeId] = field(default_factory=set)
     sent_length: dict[NodeId, int] = field(default_factory=dict)
     acked_length: dict[NodeId, int] = field(default_factory=dict)
+    applied_length: int = 0
+    applied_commands: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.members = tuple(self.members)
@@ -60,6 +62,12 @@ class RaftState:
 
         if not 0 <= self.commit_length <= len(self.log):
             raise InvariantViolation("commit length must be within the local log")
+
+        if not 0 <= self.applied_length <= self.commit_length:
+            raise InvariantViolation("applied length must be within the committed prefix")
+
+        if len(self.applied_commands) != self.applied_length:
+            raise InvariantViolation("applied commands must match the applied length")
 
         if any(entry.term > self.current_term for entry in self.log):
             raise InvariantViolation("log entry term cannot exceed the current term")
